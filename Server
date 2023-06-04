@@ -1,0 +1,148 @@
+#define _GNU_SOURCE
+
+#include <stdio.h>
+#include <semaphore.h>
+#include <stdlib.h>
+#include <time.h>
+#include <sys/resource.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <pthread.h>
+#include <sched.h>
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <errno.h>
+
+#include "queue.h"
+
+#define NumThreads 2
+
+#define SEM_NAME "/Semex"
+
+void *server_thread(void *i);
+
+char *progname = "Server";
+
+sem_t *mySemaphore;
+/* define barrier synchronization object */
+/*_______________________________________*/
+pthread_barrier_t barrier;
+
+/*queue identifier QID*/
+volatile int qid;
+
+void report_and_exit(const char* msg) {
+  perror(msg);
+  exit(-1); /* EXIT_FAILURE */
+}
+
+int main() {
+  pthread_t threadID[NumThreads];
+  pthread_attr_t attrib;
+  struct sched_param param;
+  int policy;
+  int oldcancel;
+  int i,error;
+
+  /*creating named semaphore to synchronize sender and receiver*/
+  /*_______________________________________*/
+  mySemaphore = sem_open(SEM_NAME, O_CREAT, S_IRWXU, 0);
+
+  /*create a barrier object with a count of 2*/
+  /*_______________________________________*/
+  pthread_barrier_init(&barrier, NULL, 2);
+
+  printf("%s: min priority for SCHED_RR is %d\n", progname, (int)sched_get_priority_min(SCHED_RR));
+  printf("%s: max priority for SCHED_RR is %d\n", progname, (int)sched_get_priority_max(SCHED_RR));
+
+  /*threads attributes and scheduling policy*/
+  error=pthread_getschedparam( pthread_self(), &policy, &param );
+  if(error!=0){
+      printf("%s: failed to get priority\n", progname);
+  }
+
+  error=pthread_attr_init(&attrib);
+  if(error!=0){
+      printf("%s: failed to init attribute \n", progname);
+  }
+
+  pthread_attr_setinheritsched(&attrib, PTHREAD_EXPLICIT_SCHED);
+
+  error=pthread_attr_setschedpolicy(&attrib, SCHED_RR);
+  if(error!=0){
+      printf("failed to set sched policy\n");
+  }
+
+  param.sched_priority = 10;
+
+	error=pthread_attr_setschedparam( &attrib, &param );
+  if(error!=0){
+      printf("failed to set priority\n");
+  }
+
+	pthread_setcanceltype( PTHREAD_CANCEL_ASYNCHRONOUS, &oldcancel );
+	/*creating receiver's thread*/
+	i=0;
+	pthread_create( &threadID[i], &attrib, &server_thread, (void *)&i);
+
+	/* set the barrier at this point... */
+	/*_______________________________________*/
+	pthread_barrier_wait(&barrier);
+
+	pthread_cancel( threadID[i]);
+
+  printf("%s: ending \n", progname);
+  sem_unlink(SEM_NAME);
+  return 0;
+}
+
+
+void *server_thread(void *i){
+   int loop=0;
+   /*different than in sender*/
+   int types[] = {3, 1, 2, 1, 3, 2};
+
+   /* key to identify the queue */
+   /*_______________________________________*/
+   key_t key= ftok(PathName, ProjectId);
+
+   if (key < 0) report_and_exit("key not gotten...");
+
+   /* access if created already */
+   /*_______________________________________*/
+   if (qid < 0) report_and_exit("no access to queue...");
+
+   printf("%s: server thread working ...\n", progname);
+   while(1){
+	 /*Receiver waits the sender puts the message to the queue*/
+     /*_______________________________________*/
+	   sem_wait(mySemaphore);
+
+     /* defined in queue.h */
+     queuedMessage msg;
+	 /*Receiver gets an message from the queue*/
+     /*_______________________________________*/
+     if (msgrcv(qid, &msg, sizeof(msg), types[loop%6],
+     MSG_NOERROR| IPC_NOWAIT ) < 0){
+
+     printf( "%s: msgrcv trouble... loop=%i\n", progname, loop );
+     }
+	 printf( "%s: %s received as type %i\n", progname, msg.payload, (int) msg.type);
+
+	 if(loop++ >= 17){
+		 sleep(1);
+		  /** remove the queue **/
+		 if (msgctl(qid, IPC_RMID, NULL) < 0)  /* NULL = 'no flags' */
+		    report_and_exit("trouble removing queue...");
+
+		 /*Set the barrier at this point ...*/
+	     /*_______________________________________*/
+		 pthread_barrier_wait(&barrier);
+
+	 }
+   }
+   // set the barrier at this point...
+   return (NULL);
+}
+
