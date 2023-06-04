@@ -1,0 +1,68 @@
+#include <stdio.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <semaphore.h>
+#include <time.h>
+#include <sys/resource.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include "queue.h"
+
+#define SEM_NAME "/Semex"
+
+sem_t *mySemaphore;
+
+void report_and_exit(const char* msg) {
+  perror(msg);
+  exit(-1); /* EXIT_FAILURE */
+}
+
+int main() {
+  /* message to send*/
+  char* payloads[] = {"msg1", "msg2", "msg3", "msg4", "msg5", "msg6"};
+  /* each must be > 0 */
+  int types[] = {1, 1, 2, 2, 3, 3};
+  int i=0,j=0;
+  /* build the message */
+  queuedMessage msg;
+
+  printf("Client working ... \n");
+  /*creating named semaphore to synchronize sender and receiver*/
+  /*_______________________________________*/
+  mySemaphore = sem_open(SEM_NAME, O_CREAT, S_IRWXU, 0);
+
+
+  /* getting key to queue */
+  key_t key = ftok(PathName, ProjectId);
+
+  /*_______________________________________*/
+  if (key < 0) report_and_exit("couldn't get key... \n");
+
+  int qid = msgget(key, 0666 | IPC_CREAT);
+  if (qid < 0) report_and_exit("couldn't get queue id... \n");
+
+  sleep(2);
+
+  while(i<18){
+    msg.type = types[i%6];
+    strcpy(msg.payload, payloads[i%6]);
+
+    printf("Client sending ... \n");
+    /* sending the message - doesn't block the client*/
+    msgsnd(qid, &msg, sizeof(msg), IPC_NOWAIT);
+
+    /*_______________________________________*/
+    printf("%s sent as type %i \n", msg.payload, (int) msg.type);
+    sleep(1);
+    /* unblock the receiver */
+    /*_______________________________________*/
+    sem_post(mySemaphore);
+
+    i++; j++;
+  }
+
+  return 0;
+}
